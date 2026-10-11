@@ -26,7 +26,7 @@ scheduler = AsyncIOScheduler()
 DATA_FILE = "raid_data.json"
 SERVERS_FILE = "rust_servers.json"
 
-# Данные о вайпе (основной)
+# Данные о вайпе
 raid_data = {
     "time": "20:00",
     "weekday": "Суббота",
@@ -89,11 +89,10 @@ def save_servers():
 load_data()
 
 # ----------------------------------------------------
-# ФУНКЦИЯ ДЛЯ ПРОВЕРКИ ВАЙПА
+# ФУНКЦИИ ДЛЯ ПРОВЕРКИ ВАЙПА
 # ----------------------------------------------------
 
 def get_next_wipe_time():
-    """Возвращает дату и время следующего вайпа"""
     try:
         now = datetime.now()
         weekday = raid_data.get("weekday", "Суббота").lower()
@@ -126,7 +125,6 @@ def get_next_wipe_time():
         return None
 
 def get_next_wipe_for_server(server):
-    """Возвращает дату и время следующего вайпа для конкретного сервера"""
     try:
         now = datetime.now()
         weekday = server.get("wipe_day", "Суббота").lower()
@@ -176,7 +174,6 @@ async def on_ready():
     
     schedule_raid()
     
-    # СИНХРОНИЗАЦИЯ СЛЕШ-КОМАНД
     try:
         for guild in bot.guilds:
             try:
@@ -199,7 +196,7 @@ async def on_ready():
     await bot.change_presence(activity=discord.Game(name="/vipeset | Раст"))
 
 # ----------------------------------------------------
-# АВТО-РОЛИ ДЛЯ НОВЫХ УЧАСТНИКОВ
+# АВТО-РОЛИ
 # ----------------------------------------------------
 
 @bot.event
@@ -260,7 +257,6 @@ async def on_member_remove(member):
 # ----------------------------------------------------
 
 def schedule_raid():
-    """Настраивает расписание вайпа и напоминаний"""
     for job in scheduler.get_jobs():
         if job.id in ["raid_announcement", "raid_reminder"]:
             scheduler.remove_job(job.id)
@@ -363,7 +359,7 @@ async def send_raid_announcement():
     print(f"✅ Сообщение о вайпе отправлено в {channel.name}")
 
 # ----------------------------------------------------
-# МОДАЛЬНОЕ ОКНО: НАСТРОЙКА ВАЙПА
+# МОДАЛЬНОЕ ОКНО: НАСТРОЙКА ВАЙПА (С КАНАЛОМ)
 # ----------------------------------------------------
 
 class VipeSetModal(discord.ui.Modal, title='⚙️ НАСТРОЙКА ВАЙПА'):
@@ -393,6 +389,13 @@ class VipeSetModal(discord.ui.Modal, title='⚙️ НАСТРОЙКА ВАЙПА
         max_length=100
     )
     
+    channel_input = discord.ui.TextInput(
+        label='📢 Канал для оповещений',
+        placeholder='Введи #канал или ID канала',
+        required=True,
+        max_length=100
+    )
+    
     reminder_input = discord.ui.TextInput(
         label='⏰ Напоминание (за сколько часов)',
         placeholder='Например: 1',
@@ -410,7 +413,7 @@ class VipeSetModal(discord.ui.Modal, title='⚙️ НАСТРОЙКА ВАЙПА
     )
     
     async def on_submit(self, interaction: discord.Interaction):
-        global raid_data
+        global raid_data, ANNOUNCEMENT_CHANNEL_ID
         
         await interaction.response.defer(ephemeral=True)
         
@@ -459,12 +462,50 @@ class VipeSetModal(discord.ui.Modal, title='⚙️ НАСТРОЙКА ВАЙПА
                 )
                 return
             
+            # Обрабатываем канал
+            channel_value = self.channel_input.value.strip()
+            channel_id = None
+            channel_name = None
+            
+            # Пытаемся найти канал по упоминанию
+            if channel_value.startswith("<#") and channel_value.endswith(">"):
+                try:
+                    channel_id = int(channel_value[2:-1])
+                    channel = interaction.guild.get_channel(channel_id)
+                    if channel:
+                        channel_name = channel.mention
+                    else:
+                        channel_id = None
+                except:
+                    channel_id = None
+            
+            # Если не упоминание, пробуем как ID
+            if not channel_id:
+                # Ищем канал по имени
+                channel_name_clean = channel_value.replace("#", "").strip()
+                for ch in interaction.guild.text_channels:
+                    if ch.name.lower() == channel_name_clean.lower():
+                        channel_id = ch.id
+                        channel_name = ch.mention
+                        break
+            
+            if not channel_id:
+                await interaction.followup.send(
+                    "❌ Канал не найден! Упомяни канал через `#название` или введи его ID.\n"
+                    "Пример: `#вайпы` или `123456789012345678`",
+                    ephemeral=True
+                )
+                return
+            
             # Сохраняем настройки
             raid_data["time"] = time_str
             raid_data["weekday"] = weekday_str
             raid_data["server"] = self.server_input.value.strip()
+            raid_data["channel_id"] = channel_id
             raid_data["reminder_hours"] = reminder_hours
             raid_data["map_url"] = map_url
+            
+            ANNOUNCEMENT_CHANNEL_ID = channel_id
             
             save_data()
             schedule_raid()
@@ -477,12 +518,10 @@ class VipeSetModal(discord.ui.Modal, title='⚙️ НАСТРОЙКА ВАЙПА
             embed.add_field(name="🕐 Время", value=f"**{time_str}**", inline=True)
             embed.add_field(name="📅 День", value=f"**{weekday_str}**", inline=True)
             embed.add_field(name="🎮 Сервер", value=f"**{self.server_input.value.strip()}**", inline=True)
+            embed.add_field(name="📢 Канал", value=channel_name, inline=True)
             embed.add_field(name="⏰ Напоминание", value=f"За **{reminder_hours}** час(а)", inline=True)
             embed.add_field(name="🗺️ Карта", value=f"[Ссылка]({map_url})", inline=False)
-            
-            channel_text = f"<#{raid_data['channel_id']}>" if raid_data.get('channel_id') else "❌ Канал не установлен"
-            embed.add_field(name="📢 Канал", value=channel_text, inline=False)
-            embed.set_footer(text="Используй /vipeset_channel чтобы изменить канал")
+            embed.set_footer(text="Используй /vipeset чтобы изменить настройки")
             
             await interaction.followup.send(embed=embed, ephemeral=True)
             print(f"✅ Настройки вайпа обновлены пользователем {interaction.user.name}")
@@ -498,8 +537,6 @@ class VipeSetModal(discord.ui.Modal, title='⚙️ НАСТРОЙКА ВАЙПА
 # ----------------------------------------------------
 
 class ServerDeleteModal(discord.ui.Modal, title='🗑️ УДАЛЕНИЕ СЕРВЕРА'):
-    """Модальное окно для удаления сервера"""
-    
     server_name = discord.ui.TextInput(
         label='🎮 Название сервера',
         placeholder='Введите название сервера для удаления',
@@ -514,7 +551,6 @@ class ServerDeleteModal(discord.ui.Modal, title='🗑️ УДАЛЕНИЕ СЕР
         
         server_name = self.server_name.value.strip()
         
-        # Ищем сервер
         found = False
         for i, server in enumerate(monitored_servers):
             if server["name"].lower() == server_name.lower():
@@ -547,8 +583,6 @@ class ServerDeleteModal(discord.ui.Modal, title='🗑️ УДАЛЕНИЕ СЕР
 # ----------------------------------------------------
 
 class ServerAddModal(discord.ui.Modal, title='➕ ДОБАВЛЕНИЕ СЕРВЕРА'):
-    """Модальное окно для добавления сервера"""
-    
     server_name = discord.ui.TextInput(
         label='🎮 Название сервера',
         placeholder='Например: Rustoria #1',
@@ -581,37 +615,24 @@ class ServerAddModal(discord.ui.Modal, title='➕ ДОБАВЛЕНИЕ СЕРВ�
         wipe_day = self.wipe_day.value.strip().capitalize()
         wipe_time = self.wipe_time.value.strip()
         
-        # Проверка времени
         try:
             hour, minute = map(int, wipe_time.split(":"))
             if not (0 <= hour <= 23 and 0 <= minute <= 59):
                 raise ValueError
         except:
-            await interaction.followup.send(
-                "❌ Неверный формат времени! Используй ЧЧ:ММ",
-                ephemeral=True
-            )
+            await interaction.followup.send("❌ Неверный формат времени! Используй ЧЧ:ММ", ephemeral=True)
             return
         
-        # Проверка дня недели
         valid_weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье", "Ежедневно"]
         if wipe_day not in valid_weekdays:
-            await interaction.followup.send(
-                f"❌ Неверный день недели! Доступные: {', '.join(valid_weekdays)}",
-                ephemeral=True
-            )
+            await interaction.followup.send(f"❌ Неверный день недели! Доступные: {', '.join(valid_weekdays)}", ephemeral=True)
             return
         
-        # Проверка на дубликат
         for server in monitored_servers:
             if server["name"].lower() == server_name.lower():
-                await interaction.followup.send(
-                    f"❌ Сервер **{server_name}** уже в списке!",
-                    ephemeral=True
-                )
+                await interaction.followup.send(f"❌ Сервер **{server_name}** уже в списке!", ephemeral=True)
                 return
         
-        # Добавляем сервер
         new_server = {
             "name": server_name,
             "wipe_day": wipe_day,
@@ -635,7 +656,7 @@ class ServerAddModal(discord.ui.Modal, title='➕ ДОБАВЛЕНИЕ СЕРВ�
         print(f"✅ Сервер {server_name} добавлен")
 
 # ----------------------------------------------------
-# КОМАНДА /vipeset
+# КОМАНДА /vipeset (С ПОЛЕМ КАНАЛА)
 # ----------------------------------------------------
 
 @bot.tree.command(name="vipeset", description="Настройка вайпа (только для администраторов)")
@@ -645,39 +666,11 @@ async def vipeset(interaction: discord.Interaction):
     await interaction.response.send_modal(VipeSetModal())
 
 # ----------------------------------------------------
-# КОМАНДА /vipeset_channel
-# ----------------------------------------------------
-
-@bot.tree.command(name="vipeset_channel", description="Устанавливает канал для оповещений о вайпе")
-@app_commands.default_permissions(administrator=True)
-@app_commands.describe(channel="Канал, куда отправлять уведомления о вайпе")
-async def vipeset_channel(interaction: discord.Interaction, channel: discord.TextChannel):
-    """Устанавливает канал для оповещений"""
-    global ANNOUNCEMENT_CHANNEL_ID
-    
-    await interaction.response.defer(ephemeral=True)
-    
-    raid_data["channel_id"] = channel.id
-    ANNOUNCEMENT_CHANNEL_ID = channel.id
-    save_data()
-    
-    embed = discord.Embed(
-        title="✅ КАНАЛ УСТАНОВЛЕН",
-        description=f"Уведомления о вайпе будут приходить в {channel.mention}",
-        color=0x00ff00,
-        timestamp=datetime.now()
-    )
-    
-    await interaction.followup.send(embed=embed, ephemeral=True)
-    print(f"✅ Канал для оповещений установлен: {channel.name}")
-
-# ----------------------------------------------------
 # КОМАНДА /vipelist
 # ----------------------------------------------------
 
 @bot.tree.command(name="vipelist", description="Показывает список всех серверов с вайпами")
 async def vipelist(interaction: discord.Interaction):
-    """Показывает список всех серверов"""
     await interaction.response.defer()
     
     if not monitored_servers:
@@ -727,7 +720,6 @@ async def vipelist(interaction: discord.Interaction):
         )
     
     embed.set_footer(text="Используй /vipeset для настройки своего сервера")
-    
     await interaction.followup.send(embed=embed)
 
 # ----------------------------------------------------
@@ -758,29 +750,20 @@ class ServersManageView(discord.ui.View):
     
     @discord.ui.button(label="➕ Добавить сервер", style=discord.ButtonStyle.success, emoji="➕")
     async def add_server(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Открывает модальное окно для добавления сервера"""
         await interaction.response.send_modal(ServerAddModal())
     
     @discord.ui.button(label="🗑️ Удалить сервер", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def delete_server(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Открывает новое окно с удалением сервера, закрывая текущее"""
-        # Удаляем текущее меню
         try:
             await interaction.message.delete()
         except:
             pass
-        
-        # Открываем модальное окно удаления
         await interaction.response.send_modal(ServerDeleteModal())
     
     @discord.ui.button(label="📋 Список серверов", style=discord.ButtonStyle.primary, emoji="📋")
     async def list_servers(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Показывает список серверов"""
         if not monitored_servers:
-            await interaction.response.send_message(
-                "📋 Список серверов пуст!",
-                ephemeral=True
-            )
+            await interaction.response.send_message("📋 Список серверов пуст!", ephemeral=True)
             return
         
         embed = discord.Embed(
@@ -810,7 +793,6 @@ class ServersManageView(discord.ui.View):
 @bot.tree.command(name="vipeset_servers", description="Управление списком серверов (только для администраторов)")
 @app_commands.default_permissions(administrator=True)
 async def vipeset_servers(interaction: discord.Interaction):
-    """Открывает меню управления серверами"""
     await interaction.response.defer(ephemeral=True)
     
     view = ServersManageView(author_id=interaction.user.id)

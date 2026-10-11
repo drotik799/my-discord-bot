@@ -18,24 +18,24 @@ intents.members = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix='/', intents=intents)
-
 scheduler = AsyncIOScheduler()
 
 DATA_FILE = "raid_data.json"
 SERVERS_FILE = "rust_servers.json"
 
-# Данные о вайпе
+# Данные о вайпе (основной)
 raid_data = {
     "time": "20:00",
     "weekday": "Суббота",
     "server": "Rustoria #1",
     "channel_id": None,
     "reminder_hours": 1,
-    "reminder_count": 1,
     "map_url": "https://rustmaps.com/"
 }
 
+# Список серверов для мониторинга
 monitored_servers = []
+
 ANNOUNCEMENT_CHANNEL_ID = None
 
 # ----------------------------------------------------
@@ -48,8 +48,8 @@ def load_data():
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
-                saved_data = json.load(f)
-                raid_data.update(saved_data)
+                saved = json.load(f)
+                raid_data.update(saved)
                 ANNOUNCEMENT_CHANNEL_ID = raid_data.get("channel_id")
             print("✅ Данные вайпа загружены")
         except Exception as e:
@@ -67,9 +67,8 @@ def save_data():
     try:
         with open(DATA_FILE, 'w', encoding='utf-8') as f:
             json.dump(raid_data, f, ensure_ascii=False, indent=4)
-        print("✅ Данные вайпа сохранены")
     except Exception as e:
-        print(f"❌ Ошибка сохранения данных: {e}")
+        print(f"❌ Ошибка сохранения: {e}")
 
 def save_servers():
     try:
@@ -82,14 +81,15 @@ def save_servers():
 load_data()
 
 # ----------------------------------------------------
-# ФУНКЦИИ ПРОВЕРКИ ВАЙПА
+# ПРОВЕРКА ВАЙПА
 # ----------------------------------------------------
 
-def get_next_wipe_time():
+def get_next_wipe_for_server(server):
+    """Возвращает дату и время следующего вайпа для конкретного сервера"""
     try:
         now = datetime.now()
-        weekday = raid_data.get("weekday", "Суббота").lower()
-        time_str = raid_data.get("time", "20:00")
+        weekday = server.get("wipe_day", "Суббота").lower()
+        time_str = server.get("wipe_time", "20:00")
         hour, minute = map(int, time_str.split(":"))
         
         weekdays = {
@@ -102,9 +102,7 @@ def get_next_wipe_time():
             if now > next_wipe:
                 next_wipe += timedelta(days=1)
         elif weekday in weekdays:
-            target_weekday = weekdays[weekday]
-            today_weekday = now.weekday()
-            days_ahead = target_weekday - today_weekday
+            days_ahead = weekdays[weekday] - now.weekday()
             if days_ahead <= 0:
                 days_ahead += 7
             next_wipe = now.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=days_ahead)
@@ -131,8 +129,6 @@ async def on_ready():
     if not scheduler.running:
         scheduler.start()
     
-    schedule_raid()
-    
     try:
         await bot.tree.sync()
         print("✅ Команды синхронизированы!")
@@ -154,6 +150,7 @@ async def on_member_join(member):
         if bot_role:
             try:
                 await member.add_roles(bot_role)
+                print(f"✅ Роль ʙᴏᴛ выдана {member.name}")
             except:
                 pass
     else:
@@ -161,332 +158,227 @@ async def on_member_join(member):
         if newbie_role:
             try:
                 await member.add_roles(newbie_role)
+                print(f"✅ Роль ɴᴇᴡʙɪᴇ выдана {member.name}")
             except:
                 pass
 
-# ----------------------------------------------------
-# РАСПИСАНИЕ ВАЙПА
-# ----------------------------------------------------
-
-def schedule_raid():
-    for job in scheduler.get_jobs():
-        if job.id in ["raid_announcement", "raid_reminder"]:
-            scheduler.remove_job(job.id)
-    
-    try:
-        hour, minute = map(int, raid_data["time"].split(":"))
-        weekday = raid_data.get("weekday", "Суббота").lower()
-        
-        weekdays_map = {
-            "понедельник": "mon", "вторник": "tue", "среда": "wed",
-            "четверг": "thu", "пятница": "fri", "суббота": "sat", "воскресенье": "sun"
-        }
-        
-        if weekday == "ежедневно":
-            scheduler.add_job(
-                func=send_raid_announcement,
-                trigger=CronTrigger(hour=hour, minute=minute),
-                id="raid_announcement",
-                replace_existing=True
-            )
-        elif weekday in weekdays_map:
-            scheduler.add_job(
-                func=send_raid_announcement,
-                trigger=CronTrigger(day_of_week=weekdays_map[weekday], hour=hour, minute=minute),
-                id="raid_announcement",
-                replace_existing=True
-            )
-        
-        reminder_hours = raid_data.get("reminder_hours", 1)
-        reminder_hour = hour - reminder_hours
-        if reminder_hour < 0:
-            reminder_hour = 24 + reminder_hour
-        
-        if weekday == "ежедневно":
-            scheduler.add_job(
-                func=send_raid_reminder,
-                trigger=CronTrigger(hour=reminder_hour, minute=minute),
-                id="raid_reminder",
-                replace_existing=True
-            )
-        elif weekday in weekdays_map:
-            scheduler.add_job(
-                func=send_raid_reminder,
-                trigger=CronTrigger(day_of_week=weekdays_map[weekday], hour=reminder_hour, minute=minute),
-                id="raid_reminder",
-                replace_existing=True
-            )
-        
-        print(f"⏰ Вайп запланирован на {raid_data['weekday']} в {raid_data['time']}")
-    except Exception as e:
-        print(f"❌ Ошибка расписания: {e}")
-
-async def send_raid_reminder():
-    channel_id = raid_data.get("channel_id")
-    if not channel_id:
-        return
-    channel = bot.get_channel(channel_id)
-    if not channel:
-        return
-    
-    reminder_hours = raid_data.get("reminder_hours", 1)
-    
-    embed = discord.Embed(
-        title="⏰ НАПОМИНАНИЕ О ВАЙПЕ!",
-        description=f"**Через {reminder_hours} час(а)** начнётся вайп на сервере **{raid_data['server']}**!",
-        color=0xffaa00,
-        timestamp=datetime.now()
-    )
-    embed.add_field(name="🎮 Сервер", value=f"**{raid_data['server']}**", inline=True)
-    embed.add_field(name="🕐 Время", value=f"**{raid_data['time']}**", inline=True)
-    embed.add_field(name="📅 День", value=f"**{raid_data['weekday']}**", inline=True)
-    embed.add_field(name="🗺️ Карта", value=f"[Ссылка]({raid_data['map_url']})", inline=False)
-    embed.set_footer(text="Подготовьтесь к вайпу! 🔥")
-    
-    await channel.send("@everyone", embed=embed)
-
-async def send_raid_announcement():
-    channel_id = raid_data.get("channel_id")
-    if not channel_id:
-        return
-    channel = bot.get_channel(channel_id)
-    if not channel:
-        return
-    
-    embed = discord.Embed(
-        title="⚔️ СЕРВЕР УШЁЛ НА ВАЙП! ⚔️",
-        description=f"**{raid_data['server']}** начал вайп! 🎉",
-        color=0xff0000,
-        timestamp=datetime.now()
-    )
-    embed.add_field(name="🎮 Сервер", value=f"**{raid_data['server']}**", inline=True)
-    embed.add_field(name="🕐 Время", value=f"**{raid_data['time']}**", inline=True)
-    embed.add_field(name="🗺️ Карта", value=f"[Ссылка]({raid_data['map_url']})", inline=False)
-    embed.set_footer(text="Всем удачи!")
-    
-    await channel.send("@everyone", embed=embed)
-
 # ====================================================
-# МОДАЛЬНЫЕ ОКНА ДЛЯ КАЖДОГО ПОЛЯ
+# МОДАЛЬНЫЕ ОКНА
 # ====================================================
 
-class ServerNameModal(discord.ui.Modal, title='🎮 Название сервера'):
-    value = discord.ui.TextInput(
-        label='Название сервера',
+class VipeSetModal(discord.ui.Modal, title='⚙️ НАСТРОЙКА ВАЙПА'):
+    """Единое модальное окно для настройки ОСНОВНОГО вайпа"""
+    
+    server_input = discord.ui.TextInput(
+        label='🎮 Название сервера',
         placeholder='Например: Rustoria #1',
-        default='Rustoria #1',
         required=True,
         max_length=100
     )
     
-    def __init__(self, parent_view):
-        super().__init__()
-        self.parent_view = parent_view
-        self.value.default = raid_data.get("server", "Rustoria #1")
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        raid_data["server"] = self.value.value.strip()
-        save_data()
-        schedule_raid()
-        await interaction.response.send_message(
-            f"✅ Сервер: **{raid_data['server']}**",
-            ephemeral=True
-        )
-
-
-class TimeModal(discord.ui.Modal, title='🕐 Время вайпа'):
-    value = discord.ui.TextInput(
-        label='Время (ЧЧ:ММ)',
+    time_input = discord.ui.TextInput(
+        label='🕐 Время вайпа (ЧЧ:ММ)',
         placeholder='Например: 20:00',
-        default='20:00',
         required=True,
         max_length=5
     )
     
-    def __init__(self):
-        super().__init__()
-        self.value.default = raid_data.get("time", "20:00")
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        time_str = self.value.value.strip()
-        try:
-            hour, minute = map(int, time_str.split(":"))
-            if not (0 <= hour <= 23 and 0 <= minute <= 59):
-                raise ValueError
-        except:
-            await interaction.response.send_message(
-                "❌ Неверный формат! Используй ЧЧ:ММ (например, 20:00)",
-                ephemeral=True
-            )
-            return
-        
-        raid_data["time"] = time_str
-        save_data()
-        schedule_raid()
-        await interaction.response.send_message(
-            f"✅ Время: **{time_str}**",
-            ephemeral=True
-        )
-
-
-class ChannelModal(discord.ui.Modal, title='📢 Канал для оповещений'):
-    value = discord.ui.TextInput(
-        label='Упоминание канала или ID',
-        placeholder='Например: #вайпы или 123456789012345678',
-        required=True,
-        max_length=100
-    )
-    
-    def __init__(self):
-        super().__init__()
-        if raid_data.get("channel_id"):
-            self.value.default = f"<#{raid_data['channel_id']}>"
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        global ANNOUNCEMENT_CHANNEL_ID
-        channel_value = self.value.value.strip()
-        channel_id = None
-        
-        # Упоминание <#123>
-        if channel_value.startswith("<#") and channel_value.endswith(">"):
-            try:
-                channel_id = int(channel_value[2:-1])
-            except:
-                channel_id = None
-        
-        # ID как число
-        if not channel_id and channel_value.isdigit():
-            channel_id = int(channel_value)
-        
-        # По имени канала
-        if not channel_id:
-            name_clean = channel_value.replace("#", "").strip()
-            for ch in interaction.guild.text_channels:
-                if ch.name.lower() == name_clean.lower():
-                    channel_id = ch.id
-                    break
-        
-        if not channel_id:
-            await interaction.response.send_message(
-                "❌ Канал не найден! Используй упоминание `#канал` или ID.",
-                ephemeral=True
-            )
-            return
-        
-        raid_data["channel_id"] = channel_id
-        ANNOUNCEMENT_CHANNEL_ID = channel_id
-        save_data()
-        
-        await interaction.response.send_message(
-            f"✅ Канал: <#{channel_id}>",
-            ephemeral=True
-        )
-
-
-class WeekdayModal(discord.ui.Modal, title='📅 День недели'):
-    value = discord.ui.TextInput(
-        label='День недели',
-        placeholder='Например: Суббота или Ежедневно',
-        default='Суббота',
+    weekday_input = discord.ui.TextInput(
+        label='📅 День недели',
+        placeholder='Суббота / Ежедневно',
         required=True,
         max_length=20
     )
     
-    def __init__(self):
-        super().__init__()
-        self.value.default = raid_data.get("weekday", "Суббота")
+    channel_input = discord.ui.TextInput(
+        label='📢 Канал (упоминание #канал или ID)',
+        placeholder='Например: #вайпы',
+        required=True,
+        max_length=100
+    )
     
-    async def on_submit(self, interaction: discord.Interaction):
-        weekday_str = self.value.value.strip().capitalize()
-        valid = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье", "Ежедневно"]
-        
-        if weekday_str not in valid:
-            await interaction.response.send_message(
-                f"❌ Неверный день! Доступные: {', '.join(valid)}",
-                ephemeral=True
-            )
-            return
-        
-        raid_data["weekday"] = weekday_str
-        save_data()
-        schedule_raid()
-        await interaction.response.send_message(
-            f"✅ День: **{weekday_str}**",
-            ephemeral=True
-        )
-
-
-class ReminderModal(discord.ui.Modal, title='⏰ Напоминание'):
-    value = discord.ui.TextInput(
-        label='За сколько часов напомнить (1-24)',
+    reminder_input = discord.ui.TextInput(
+        label='⏰ Напоминание за N часов (1-24)',
         placeholder='Например: 1',
-        default='1',
         required=True,
         max_length=2
     )
     
     def __init__(self):
         super().__init__()
-        self.value.default = str(raid_data.get("reminder_hours", 1))
+        # Подставляем текущие значения
+        self.server_input.default = raid_data.get("server", "Rustoria #1")
+        self.time_input.default = raid_data.get("time", "20:00")
+        self.weekday_input.default = raid_data.get("weekday", "Суббота")
+        if raid_data.get("channel_id"):
+            self.channel_input.default = f"<#{raid_data['channel_id']}>"
+        self.reminder_input.default = str(raid_data.get("reminder_hours", 1))
     
     async def on_submit(self, interaction: discord.Interaction):
-        try:
-            hours = int(self.value.value.strip())
-            if not (1 <= hours <= 24):
-                raise ValueError
-        except:
-            await interaction.response.send_message(
-                "❌ Введи число от 1 до 24!",
-                ephemeral=True
-            )
-            return
+        global raid_data, ANNOUNCEMENT_CHANNEL_ID
         
-        raid_data["reminder_hours"] = hours
-        save_data()
-        schedule_raid()
-        await interaction.response.send_message(
-            f"✅ Напоминание за **{hours}** час(а)",
-            ephemeral=True
-        )
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            # Проверяем время
+            time_str = self.time_input.value.strip()
+            try:
+                hour, minute = map(int, time_str.split(":"))
+                if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                    raise ValueError
+            except:
+                await interaction.followup.send("❌ Неверный формат времени!", ephemeral=True)
+                return
+            
+            # Проверяем день недели
+            weekday_str = self.weekday_input.value.strip().capitalize()
+            valid = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье", "Ежедневно"]
+            if weekday_str not in valid:
+                await interaction.followup.send(f"❌ Неверный день! Доступные: {', '.join(valid)}", ephemeral=True)
+                return
+            
+            # Проверяем напоминание
+            try:
+                reminder_hours = int(self.reminder_input.value.strip())
+                if not (1 <= reminder_hours <= 24):
+                    raise ValueError
+            except:
+                await interaction.followup.send("❌ Напоминание от 1 до 24!", ephemeral=True)
+                return
+            
+            # Обрабатываем канал
+            channel_value = self.channel_input.value.strip()
+            channel_id = None
+            
+            if channel_value.startswith("<#") and channel_value.endswith(">"):
+                try:
+                    channel_id = int(channel_value[2:-1])
+                except:
+                    pass
+            
+            if not channel_id and channel_value.isdigit():
+                channel_id = int(channel_value)
+            
+            if not channel_id:
+                name_clean = channel_value.replace("#", "").strip()
+                for ch in interaction.guild.text_channels:
+                    if ch.name.lower() == name_clean.lower():
+                        channel_id = ch.id
+                        break
+            
+            if not channel_id:
+                await interaction.followup.send("❌ Канал не найден!", ephemeral=True)
+                return
+            
+            # Сохраняем
+            raid_data["server"] = self.server_input.value.strip()
+            raid_data["time"] = time_str
+            raid_data["weekday"] = weekday_str
+            raid_data["channel_id"] = channel_id
+            raid_data["reminder_hours"] = reminder_hours
+            
+            ANNOUNCEMENT_CHANNEL_ID = channel_id
+            
+            save_data()
+            
+            # Подтверждение
+            embed = discord.Embed(
+                title="✅ НАСТРОЙКИ СОХРАНЕНЫ",
+                color=0x00ff00,
+                timestamp=datetime.now()
+            )
+            embed.add_field(name="🎮 Сервер", value=f"**{raid_data['server']}**", inline=True)
+            embed.add_field(name="🕐 Время", value=f"**{raid_data['time']}**", inline=True)
+            embed.add_field(name="📅 День", value=f"**{raid_data['weekday']}**", inline=True)
+            embed.add_field(name="📢 Канал", value=f"<#{channel_id}>", inline=True)
+            embed.add_field(name="⏰ Напоминание", value=f"За **{reminder_hours}** час(а)", inline=True)
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            print(f"✅ Настройки вайпа обновлены: {interaction.user.name}")
+            
+        except Exception as e:
+            await interaction.followup.send(f"❌ Ошибка: {str(e)}", ephemeral=True)
 
 
-class ReminderCountModal(discord.ui.Modal, title='🔔 Количество напоминаний'):
-    value = discord.ui.TextInput(
-        label='Сколько напоминаний отправить (1-5)',
-        placeholder='Например: 1',
-        default='1',
+class ServerAddModal(discord.ui.Modal, title='➕ ДОБАВЛЕНИЕ СЕРВЕРА'):
+    """Модальное окно для добавления сервера в список мониторинга"""
+    
+    name = discord.ui.TextInput(
+        label='🎮 Название сервера',
+        placeholder='Например: Rustoria #1',
         required=True,
-        max_length=1
+        max_length=100
     )
     
-    def __init__(self):
-        super().__init__()
-        self.value.default = str(raid_data.get("reminder_count", 1))
+    day = discord.ui.TextInput(
+        label='📅 День вайпа',
+        placeholder='Например: Суббота',
+        default='Суббота',
+        required=True,
+        max_length=20
+    )
+    
+    time = discord.ui.TextInput(
+        label='🕐 Время вайпа (ЧЧ:ММ)',
+        placeholder='Например: 20:00',
+        default='20:00',
+        required=True,
+        max_length=5
+    )
     
     async def on_submit(self, interaction: discord.Interaction):
+        global monitored_servers
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        name = self.name.value.strip()
+        day = self.day.value.strip().capitalize()
+        time_str = self.time.value.strip()
+        
+        # Проверяем время
         try:
-            count = int(self.value.value.strip())
-            if not (1 <= count <= 5):
+            hour, minute = map(int, time_str.split(":"))
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
                 raise ValueError
         except:
-            await interaction.response.send_message(
-                "❌ Введи число от 1 до 5!",
-                ephemeral=True
-            )
+            await interaction.followup.send("❌ Неверный формат времени!", ephemeral=True)
             return
         
-        raid_data["reminder_count"] = count
-        save_data()
-        await interaction.response.send_message(
-            f"✅ Количество напоминаний: **{count}**",
+        # Проверяем день
+        valid = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье", "Ежедневно"]
+        if day not in valid:
+            await interaction.followup.send(f"❌ Неверный день! Доступные: {', '.join(valid)}", ephemeral=True)
+            return
+        
+        # Проверяем дубликат
+        for s in monitored_servers:
+            if s["name"].lower() == name.lower():
+                await interaction.followup.send(f"❌ Сервер **{name}** уже есть в списке!", ephemeral=True)
+                return
+        
+        # Добавляем
+        monitored_servers.append({
+            "name": name,
+            "wipe_day": day,
+            "wipe_time": time_str,
+            "channel_id": interaction.channel.id
+        })
+        save_servers()
+        
+        await interaction.followup.send(
+            f"✅ Сервер **{name}** добавлен!\n"
+            f"📅 {day} в **{time_str}**",
             ephemeral=True
         )
+        print(f"✅ Сервер {name} добавлен")
 
 
-class DeleteServerModal(discord.ui.Modal, title='🗑️ Удаление сервера'):
-    value = discord.ui.TextInput(
-        label='Название сервера для удаления',
-        placeholder='Введи название сервера',
+class ServerDeleteModal(discord.ui.Modal, title='🗑️ УДАЛЕНИЕ СЕРВЕРА'):
+    """Модальное окно для удаления сервера"""
+    
+    name = discord.ui.TextInput(
+        label='🎮 Название сервера для удаления',
+        placeholder='Введи название точно как в списке',
         required=True,
         max_length=100
     )
@@ -496,184 +388,37 @@ class DeleteServerModal(discord.ui.Modal, title='🗑️ Удаление сер
         
         await interaction.response.defer(ephemeral=True)
         
-        server_name = self.value.value.strip()
+        name = self.name.value.strip()
         
         for i, server in enumerate(monitored_servers):
-            if server["name"].lower() == server_name.lower():
+            if server["name"].lower() == name.lower():
                 monitored_servers.pop(i)
                 save_servers()
                 await interaction.followup.send(
-                    f"✅ Сервер **{server_name}** удалён!",
+                    f"✅ Сервер **{name}** удалён!",
                     ephemeral=True
                 )
+                print(f"✅ Сервер {name} удалён")
                 return
         
-        await interaction.followup.send(
-            f"❌ Сервер **{server_name}** не найден!\n"
-            f"Посмотри список: `/vipelist`",
-            ephemeral=True
-        )
-
-# ====================================================
-# МЕНЮ /vipeset
-# ====================================================
-
-class VipeSetView(discord.ui.View):
-    def __init__(self, author_id):
-        super().__init__(timeout=300)
-        self.author_id = author_id
-        self.message = None
-    
-    async def interaction_check(self, interaction: discord.Interaction):
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message(
-                "❌ Это меню вызвано другим пользователем!",
+        # Если не найден — показываем список
+        if monitored_servers:
+            servers_list = "\n".join([f"• {s['name']}" for s in monitored_servers])
+            await interaction.followup.send(
+                f"❌ Сервер **{name}** не найден!\n\n"
+                f"**Доступные сервера:**\n{servers_list}",
                 ephemeral=True
             )
-            return False
-        return True
-    
-    async def on_timeout(self):
-        if self.message:
-            try:
-                await self.message.delete()
-            except:
-                pass
-    
-    def get_embed(self):
-        embed = discord.Embed(
-            title="⚙️ НАСТРОЙКА ВАЙПА",
-            description="Нажми на кнопку, чтобы изменить параметр",
-            color=0x00ff00,
-            timestamp=datetime.now()
-        )
-        
-        channel_text = f"<#{raid_data['channel_id']}>" if raid_data.get('channel_id') else "❌ Не установлен"
-        
-        embed.add_field(name="🎮 Сервер", value=f"**{raid_data.get('server', 'Не указан')}**", inline=True)
-        embed.add_field(name="🕐 Время вайпа", value=f"**{raid_data.get('time', '20:00')}**", inline=True)
-        embed.add_field(name="📢 Канал", value=channel_text, inline=True)
-        
-        embed.add_field(name="📅 День недели", value=f"**{raid_data.get('weekday', 'Суббота')}**", inline=True)
-        embed.add_field(name="⏰ За сколько напомнить", value=f"**{raid_data.get('reminder_hours', 1)}** час(а)", inline=True)
-        embed.add_field(name="🔔 Кол-во напоминаний", value=f"**{raid_data.get('reminder_count', 1)}**", inline=True)
-        
-        next_wipe = get_next_wipe_time()
-        if next_wipe:
-            time_left = next_wipe - datetime.now()
-            days = time_left.days
-            hours = time_left.seconds // 3600
-            minutes = (time_left.seconds % 3600) // 60
-            embed.add_field(
-                name="⏳ До вайпа осталось",
-                value=f"**{days}д {hours}ч {minutes}мин**",
-                inline=False
+        else:
+            await interaction.followup.send(
+                f"❌ Сервер **{name}** не найден!\n"
+                f"Список серверов пуст. Добавь через `/vipeset_servers`",
+                ephemeral=True
             )
-        
-        embed.set_footer(text="Меню видно только тебе")
-        return embed
-    
-    async def refresh(self, interaction: discord.Interaction):
-        try:
-            await interaction.message.edit(embed=self.get_embed(), view=self)
-        except:
-            pass
-    
-    # Кнопки 1-го ряда
-    @discord.ui.button(label="🎮 Сервер", style=discord.ButtonStyle.primary, row=0)
-    async def btn_server(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ServerNameModal(self))
-    
-    @discord.ui.button(label="🕐 Время", style=discord.ButtonStyle.primary, row=0)
-    async def btn_time(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(TimeModal())
-    
-    @discord.ui.button(label="📢 Канал", style=discord.ButtonStyle.primary, row=0)
-    async def btn_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ChannelModal())
-    
-    # Кнопки 2-го ряда
-    @discord.ui.button(label="📅 День недели", style=discord.ButtonStyle.primary, row=1)
-    async def btn_weekday(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(WeekdayModal())
-    
-    @discord.ui.button(label="⏰ Напоминание", style=discord.ButtonStyle.primary, row=1)
-    async def btn_reminder(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ReminderModal())
-    
-    @discord.ui.button(label="🔔 Кол-во напом.", style=discord.ButtonStyle.primary, row=1)
-    async def btn_reminder_count(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ReminderCountModal())
-    
-    # Кнопки 3-го ряда
-    @discord.ui.button(label="🗑️ Удалить сервер", style=discord.ButtonStyle.danger, row=2, emoji="🗑️")
-    async def btn_delete(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(DeleteServerModal())
-    
-    @discord.ui.button(label="🔄 Обновить", style=discord.ButtonStyle.success, row=2)
-    async def btn_refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(embed=self.get_embed(), view=self)
-    
-    @discord.ui.button(label="❌ Закрыть", style=discord.ButtonStyle.secondary, row=2)
-    async def btn_close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            await interaction.message.delete()
-        except:
-            pass
-        await interaction.response.send_message("✅ Меню закрыто", ephemeral=True)
 
-# ----------------------------------------------------
-# КОМАНДА /vipeset
-# ----------------------------------------------------
-
-@bot.tree.command(name="vipeset", description="Настройка вайпа (только для администраторов)")
-@app_commands.default_permissions(administrator=True)
-async def vipeset(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    
-    view = VipeSetView(author_id=interaction.user.id)
-    embed = view.get_embed()
-    
-    message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-    view.message = message
-
-# ----------------------------------------------------
-# КОМАНДА /vipelist
-# ----------------------------------------------------
-
-@bot.tree.command(name="vipelist", description="Показывает список всех серверов с вайпами")
-async def vipelist(interaction: discord.Interaction):
-    await interaction.response.defer()
-    
-    if not monitored_servers:
-        embed = discord.Embed(
-            title="📋 СПИСОК СЕРВЕРОВ",
-            description="Список пуст.\nАдминистраторы могут добавить сервера командой `/vipeset_servers`.",
-            color=0xffaa00,
-            timestamp=datetime.now()
-        )
-        await interaction.followup.send(embed=embed)
-        return
-    
-    embed = discord.Embed(
-        title="📋 СПИСОК СЕРВЕРОВ С ВАЙПАМИ",
-        description=f"Всего серверов: **{len(monitored_servers)}**",
-        color=0x00aaff,
-        timestamp=datetime.now()
-    )
-    
-    for server in monitored_servers:
-        embed.add_field(
-            name=f"🎮 {server['name']}",
-            value=f"📅 **{server.get('wipe_day', 'Не указан')}** в **{server.get('wipe_time', '20:00')}**",
-            inline=False
-        )
-    
-    await interaction.followup.send(embed=embed)
-
-# ----------------------------------------------------
-# КОМАНДА /vipeset_servers
-# ----------------------------------------------------
+# ====================================================
+# МЕНЮ УПРАВЛЕНИЯ СЕРВЕРАМИ
+# ====================================================
 
 class ServersManageView(discord.ui.View):
     def __init__(self, author_id):
@@ -687,13 +432,20 @@ class ServersManageView(discord.ui.View):
             return False
         return True
     
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.delete()
+            except:
+                pass
+    
     @discord.ui.button(label="➕ Добавить сервер", style=discord.ButtonStyle.success)
     async def add_server(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ServerAddModal())
     
     @discord.ui.button(label="🗑️ Удалить сервер", style=discord.ButtonStyle.danger)
     async def delete_server(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(DeleteServerModal())
+        await interaction.response.send_modal(ServerDeleteModal())
     
     @discord.ui.button(label="❌ Закрыть", style=discord.ButtonStyle.secondary)
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -703,41 +455,15 @@ class ServersManageView(discord.ui.View):
             pass
         await interaction.response.send_message("✅ Закрыто", ephemeral=True)
 
+# ====================================================
+# КОМАНДЫ
+# ====================================================
 
-class ServerAddModal(discord.ui.Modal, title='➕ Добавление сервера'):
-    name = discord.ui.TextInput(label='🎮 Название сервера', placeholder='Rustoria #1', required=True)
-    day = discord.ui.TextInput(label='📅 День вайпа', placeholder='Суббота', default='Суббота', required=True)
-    time = discord.ui.TextInput(label='🕐 Время вайпа', placeholder='20:00', default='20:00', required=True)
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        
-        name = self.name.value.strip()
-        day = self.day.value.strip().capitalize()
-        time_str = self.time.value.strip()
-        
-        try:
-            hour, minute = map(int, time_str.split(":"))
-            if not (0 <= hour <= 23 and 0 <= minute <= 59):
-                raise ValueError
-        except:
-            await interaction.followup.send("❌ Неверное время!", ephemeral=True)
-            return
-        
-        for s in monitored_servers:
-            if s["name"].lower() == name.lower():
-                await interaction.followup.send(f"❌ Сервер **{name}** уже есть!", ephemeral=True)
-                return
-        
-        monitored_servers.append({
-            "name": name,
-            "wipe_day": day,
-            "wipe_time": time_str,
-            "channel_id": interaction.channel.id
-        })
-        save_servers()
-        
-        await interaction.followup.send(f"✅ Сервер **{name}** добавлен!", ephemeral=True)
+@bot.tree.command(name="vipeset", description="Настройка основного вайпа")
+@app_commands.default_permissions(administrator=True)
+async def vipeset(interaction: discord.Interaction):
+    """Открывает модальное окно настройки вайпа"""
+    await interaction.response.send_modal(VipeSetModal())
 
 
 @bot.tree.command(name="vipeset_servers", description="Управление списком серверов")
@@ -749,7 +475,8 @@ async def vipeset_servers(interaction: discord.Interaction):
     
     embed = discord.Embed(
         title="⚙️ УПРАВЛЕНИЕ СЕРВЕРАМИ",
-        description="➕ **Добавить сервер**\n🗑️ **Удалить сервер**",
+        description="➕ **Добавить сервер** — добавить новый\n"
+                   "🗑️ **Удалить сервер** — удалить из списка",
         color=0x00ff00,
         timestamp=datetime.now()
     )
@@ -757,11 +484,64 @@ async def vipeset_servers(interaction: discord.Interaction):
     message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
     view.message = message
 
-# ----------------------------------------------------
-# КОМАНДА /вайп
-# ----------------------------------------------------
 
-@bot.tree.command(name="вайп", description="Показывает расписание вайпа")
+@bot.tree.command(name="vipelist", description="Показывает список всех серверов с вайпами")
+async def vipelist(interaction: discord.Interaction):
+    """РАБОЧАЯ команда — показывает все сервера"""
+    await interaction.response.defer()
+    
+    if not monitored_servers:
+        embed = discord.Embed(
+            title="📋 СПИСОК СЕРВЕРОВ",
+            description="Список пуст.\n\n"
+                       "Администраторы могут добавить сервера командой `/vipeset_servers`.",
+            color=0xffaa00,
+            timestamp=datetime.now()
+        )
+        await interaction.followup.send(embed=embed)
+        return
+    
+    embed = discord.Embed(
+        title="📋 СПИСОК СЕРВЕРОВ С ВАЙПАМИ",
+        description=f"Всего серверов: **{len(monitored_servers)}**",
+        color=0x00aaff,
+        timestamp=datetime.now()
+    )
+    
+    now = datetime.now()
+    
+    for server in monitored_servers:
+        next_wipe = get_next_wipe_for_server(server)
+        if next_wipe:
+            time_left = next_wipe - now
+            days = time_left.days
+            hours = time_left.seconds // 3600
+            minutes = (time_left.seconds % 3600) // 60
+            
+            if time_left.total_seconds() < 0:
+                status = "🟢 ВАЙП ИДЁТ!"
+            elif days == 0 and hours == 0:
+                status = "🟡 МЕНЕЕ ЧАСА!"
+            elif days == 0:
+                status = f"⏳ {hours}ч {minutes}мин"
+            else:
+                status = f"⏳ {days}д {hours}ч"
+        else:
+            status = "❌ Ошибка"
+        
+        embed.add_field(
+            name=f"🎮 {server['name']}",
+            value=f"📅 **{server.get('wipe_day', 'Не указан')}**\n"
+                  f"🕐 **{server.get('wipe_time', '20:00')}**\n"
+                  f"⏳ До вайпа: **{status}**",
+            inline=False
+        )
+    
+    embed.set_footer(text="Используй /vipeset_servers чтобы добавить/удалить сервер")
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="вайп", description="Показывает расписание основного вайпа")
 async def raid_slash(interaction: discord.Interaction):
     await interaction.response.defer()
     
@@ -773,27 +553,14 @@ async def raid_slash(interaction: discord.Interaction):
     embed.add_field(name="🕐 Время", value=f"**{raid_data['time']}**", inline=True)
     embed.add_field(name="📅 День", value=f"**{raid_data['weekday']}**", inline=True)
     embed.add_field(name="🎮 Сервер", value=f"**{raid_data['server']}**", inline=True)
-    embed.add_field(name="🗺️ Карта", value=f"[Ссылка]({raid_data['map_url']})", inline=False)
+    embed.add_field(name="📢 Канал", value=f"<#{raid_data['channel_id']}>" if raid_data.get('channel_id') else "❌ Не установлен", inline=True)
     embed.add_field(name="⏰ Напоминание", value=f"За **{raid_data['reminder_hours']}** час(а)", inline=True)
-    embed.add_field(name="🔔 Кол-во напом.", value=f"**{raid_data.get('reminder_count', 1)}**", inline=True)
-    
-    next_wipe = get_next_wipe_time()
-    if next_wipe:
-        time_left = next_wipe - datetime.now()
-        days = time_left.days
-        hours = time_left.seconds // 3600
-        minutes = (time_left.seconds % 3600) // 60
-        embed.add_field(
-            name="⏳ До вайпа осталось",
-            value=f"**{days}д {hours}ч {minutes}мин**",
-            inline=False
-        )
     
     await interaction.followup.send(embed=embed)
 
-# ----------------------------------------------------
+# ====================================================
 # ЗАПУСК
-# ----------------------------------------------------
+# ====================================================
 
 TOKEN = os.getenv("BOT_TOKEN")
 

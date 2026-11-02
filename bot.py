@@ -23,6 +23,7 @@ scheduler = AsyncIOScheduler()
 DATA_FILE = "raid_data.json"
 SERVERS_FILE = "rust_servers.json"
 SETTINGS_FILE = "bot_settings.json"
+WARNS_FILE = "warns_data.json"
 
 # Данные о вайпе (основной)
 raid_data = {
@@ -34,14 +35,9 @@ raid_data = {
     "map_url": "https://rustmaps.com/"
 }
 
-# Список серверов для мониторинга
 monitored_servers = []
-
-# Настройки бота (вкл/выкл функции)
-bot_settings = {
-    "autoroles_enabled": True
-}
-
+bot_settings = {"autoroles_enabled": True}
+warns_data = {}  # { "user_id": [ {"reason": "...", "moderator": "...", "date": "..."} ] }
 ANNOUNCEMENT_CHANNEL_ID = None
 
 # ----------------------------------------------------
@@ -49,7 +45,7 @@ ANNOUNCEMENT_CHANNEL_ID = None
 # ----------------------------------------------------
 
 def load_data():
-    global raid_data, monitored_servers, bot_settings, ANNOUNCEMENT_CHANNEL_ID
+    global raid_data, monitored_servers, bot_settings, warns_data, ANNOUNCEMENT_CHANNEL_ID
     
     if os.path.exists(DATA_FILE):
         try:
@@ -57,7 +53,6 @@ def load_data():
                 saved = json.load(f)
                 raid_data.update(saved)
                 ANNOUNCEMENT_CHANNEL_ID = raid_data.get("channel_id")
-            print("✅ Данные вайпа загружены")
         except Exception as e:
             print(f"❌ Ошибка загрузки данных: {e}")
     
@@ -65,7 +60,6 @@ def load_data():
         try:
             with open(SERVERS_FILE, 'r', encoding='utf-8') as f:
                 monitored_servers = json.load(f)
-            print(f"✅ Загружено {len(monitored_servers)} серверов")
         except Exception as e:
             print(f"❌ Ошибка загрузки серверов: {e}")
 
@@ -74,9 +68,16 @@ def load_data():
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
                 saved = json.load(f)
                 bot_settings.update(saved)
-            print("✅ Настройки бота загружены")
         except Exception as e:
             print(f"❌ Ошибка загрузки настроек: {e}")
+
+    if os.path.exists(WARNS_FILE):
+        try:
+            with open(WARNS_FILE, 'r', encoding='utf-8') as f:
+                warns_data = json.load(f)
+            print(f"✅ Загружено {len(warns_data)} записей о варнах")
+        except Exception as e:
+            print(f"❌ Ошибка загрузки варнов: {e}")
 
 def save_data():
     try:
@@ -89,7 +90,6 @@ def save_servers():
     try:
         with open(SERVERS_FILE, 'w', encoding='utf-8') as f:
             json.dump(monitored_servers, f, ensure_ascii=False, indent=4)
-        print("✅ Список серверов сохранён")
     except Exception as e:
         print(f"❌ Ошибка сохранения серверов: {e}")
 
@@ -97,9 +97,16 @@ def save_settings():
     try:
         with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
             json.dump(bot_settings, f, ensure_ascii=False, indent=4)
-        print("✅ Настройки бота сохранены")
     except Exception as e:
         print(f"❌ Ошибка сохранения настроек: {e}")
+
+def save_warns():
+    try:
+        with open(WARNS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(warns_data, f, ensure_ascii=False, indent=4)
+        print("✅ Варны сохранены")
+    except Exception as e:
+        print(f"❌ Ошибка сохранения варнов: {e}")
 
 load_data()
 
@@ -147,7 +154,6 @@ async def on_ready():
     ANNOUNCEMENT_CHANNEL_ID = raid_data.get("channel_id")
     
     print(f'✅ Бот {bot.user} запущен!')
-    print(f'📋 Автороли: {"ВКЛ" if bot_settings.get("autoroles_enabled") else "ВЫКЛ"}')
     
     if not scheduler.running:
         scheduler.start()
@@ -166,67 +172,214 @@ async def on_ready():
 
 @bot.event
 async def on_member_join(member):
-    # Проверяем, включена ли функция авторолей
     if not bot_settings.get("autoroles_enabled", True):
         return
 
     guild = member.guild
-    
     if member.bot:
         bot_role = discord.utils.get(guild.roles, name="ʙᴏᴛ")
         if bot_role:
             try:
                 await member.add_roles(bot_role)
-                print(f"✅ Роль ʙᴏᴛ выдана {member.name}")
-            except Exception as e:
-                print(f"❌ Ошибка выдачи роли ʙᴏᴛ: {e}")
+            except:
+                pass
     else:
         newbie_role = discord.utils.get(guild.roles, name="ɴᴇᴡʙɪᴇ")
         if newbie_role:
             try:
                 await member.add_roles(newbie_role)
-                print(f"✅ Роль ɴᴇᴡʙɪᴇ выдана {member.name}")
-            except Exception as e:
-                print(f"❌ Ошибка выдачи роли ɴᴇᴡʙɪᴇ: {e}")
-
-# ----------------------------------------------------
-# КОМАНДА /arole (ВКЛ/ВЫКЛ АВТОРОЛЕЙ)
-# ----------------------------------------------------
-
-@bot.tree.command(name="arole", description="Включить или выключить систему авторолей")
-@app_commands.default_permissions(administrator=True)
-@app_commands.describe(status="Выберите действие")
-@app_commands.choices(status=[
-    app_commands.Choice(name="Включить", value="on"),
-    app_commands.Choice(name="Выключить", value="off")
-])
-async def arole(interaction: discord.Interaction, status: app_commands.Choice[str]):
-    await interaction.response.defer(ephemeral=True)
-    
-    if status.value == "on":
-        bot_settings["autoroles_enabled"] = True
-        save_settings()
-        embed = discord.Embed(
-            title="✅ АВТОРОЛИ ВКЛЮЧЕНЫ",
-            description="Бот снова будет автоматически выдавать роли новым участникам.",
-            color=0x00ff00,
-            timestamp=datetime.now()
-        )
-    else:
-        bot_settings["autoroles_enabled"] = False
-        save_settings()
-        embed = discord.Embed(
-            title="🛑 АВТОРОЛИ ВЫКЛЮЧЕНЫ",
-            description="Бот больше **не будет** выдавать роли новым участникам.",
-            color=0xff0000,
-            timestamp=datetime.now()
-        )
-    
-    embed.set_footer(text=f"Текущий статус: {status.name}")
-    await interaction.followup.send(embed=embed, ephemeral=True)
+            except:
+                pass
 
 # ====================================================
-# МОДАЛЬНЫЕ ОКНА (ВАЙПЫ)
+# МОДАЛЬНОЕ ОКНО: ВЫДАЧА ВАРНА
+# ====================================================
+
+class WarnModal(discord.ui.Modal, title='⚠️ ВЫДАЧА ВАРНА'):
+    reason = discord.ui.TextInput(
+        label='Причина варна',
+        placeholder='Опишите причину...',
+        required=True,
+        max_length=200,
+        style=discord.TextStyle.paragraph
+    )
+    
+    def __init__(self, target_member: discord.Member):
+        super().__init__()
+        self.target_member = target_member
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        user_id = str(self.target_member.id)
+        if user_id not in warns_data:
+            warns_data[user_id] = []
+        
+        warn_info = {
+            "reason": self.reason.value,
+            "moderator": interaction.user.display_name,
+            "date": datetime.now().strftime("%d.%m.%Y %H:%M")
+        }
+        warns_data[user_id].append(warn_info)
+        save_warns()
+        
+        # Отправляем ЛС пользователю
+        try:
+            dm_embed = discord.Embed(
+                title="⚠️ ВАМ ВЫДАН ВАРН",
+                description=f"На сервере **{interaction.guild.name}**",
+                color=0xff5500,
+                timestamp=datetime.now()
+            )
+            dm_embed.add_field(name="🛡️ Модератор", value=interaction.user.display_name, inline=True)
+            dm_embed.add_field(name="📝 Причина", value=self.reason.value, inline=False)
+            dm_embed.add_field(name="⚠️ Всего варнов", value=f"**{len(warns_data[user_id])}**", inline=True)
+            await self.target_member.send(embed=dm_embed)
+        except:
+            pass  # Если у пользователя закрыты ЛС
+        
+        await interaction.followup.send(
+            f"✅ Варн выдан игроку {self.target_member.mention}!\n"
+            f"📝 Причина: **{self.reason.value}**\n"
+            f"⚠️ Всего варнов: **{len(warns_data[user_id])}**",
+            ephemeral=True
+        )
+
+# ====================================================
+# ПРОФИЛЬ (С КНОПКАМИ)
+# ====================================================
+
+class ProfileView(discord.ui.View):
+    def __init__(self, user, guild, author_id, is_admin=False):
+        super().__init__(timeout=120)
+        self.user = user
+        self.guild = guild
+        self.author_id = author_id
+        self.message = None
+        
+        # Если пользователь не админ — удаляем кнопку "Выдать варн"
+        if not is_admin:
+            self.remove_item(self.btn_warn)
+    
+    async def interaction_check(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "❌ Это меню вызвано другим пользователем!",
+                ephemeral=True
+            )
+            return False
+        return True
+    
+    async def on_timeout(self):
+        if self.message:
+            for item in self.children:
+                item.disabled = True
+            await self.message.edit(view=self)
+            await asyncio.sleep(5)
+            try:
+                await self.message.delete()
+            except:
+                pass
+    
+    def get_embed(self):
+        user_id = str(self.user.id)
+        warns = warns_data.get(user_id, [])
+        warn_count = len(warns)
+        
+        joined_at = self.user.joined_at
+        joined_str = joined_at.strftime("%d.%m.%Y в %H:%M") if joined_at else "Неизвестно"
+        
+        roles = [role.mention for role in self.user.roles if role.name != "@everyone"]
+        roles_str = " ".join(roles) if roles else "Нет ролей"
+        
+        status_map = {
+            discord.Status.online: "🟢 Онлайн",
+            discord.Status.idle: "🟡 Не активен",
+            discord.Status.dnd: "🔴 Не беспокоить",
+            discord.Status.offline: "⚫ Оффлайн"
+        }
+        status = status_map.get(self.user.status, "⚪ Неизвестно")
+        
+        voice_time = "Не в голосовом канале"
+        if self.user.voice and self.user.voice.channel:
+            voice_time = f"В канале: {self.user.voice.channel.name}"
+        
+        embed = discord.Embed(
+            title="📊 ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ",
+            color=self.user.color if self.user.color.value != 0 else 0x00ff00,
+            timestamp=datetime.now()
+        )
+        
+        embed.set_author(name=self.user.display_name, icon_url=self.user.avatar.url if self.user.avatar else None)
+        embed.set_thumbnail(url=self.user.avatar.url if self.user.avatar else None)
+        
+        embed.add_field(name="🆔 Никнейм", value=f"{self.user.mention}", inline=False)
+        embed.add_field(name="🆔 ID", value=f"`{self.user.id}`", inline=True)
+        embed.add_field(name="📅 На сервере с", value=joined_str, inline=True)
+        embed.add_field(name="📊 Статус", value=status, inline=True)
+        embed.add_field(name="👥 Роли", value=roles_str if len(roles_str) < 1024 else roles_str[:1020] + "...", inline=False)
+        embed.add_field(name="🔊 Голосовой канал", value=voice_time, inline=True)
+        embed.add_field(name="⚠️ Варны", value=f"**{warn_count}**", inline=True)
+        
+        if warn_count > 0:
+            warns_list = ""
+            for i, warn in enumerate(warns[:5], 1):
+                warns_list += f"**{i}.** {warn['reason']} (от {warn['moderator']}, {warn['date']})\n"
+            if len(warns) > 5:
+                warns_list += f"... и ещё {len(warns) - 5} варнов"
+            embed.add_field(name="📋 Последние варны", value=warns_list, inline=False)
+        
+        embed.set_footer(text=f"Запросил: {self.author_id}")
+        return embed
+
+    @discord.ui.button(label="🔄 Обновить", style=discord.ButtonStyle.primary)
+    async def btn_refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="⚠️ Выдать варн", style=discord.ButtonStyle.danger, emoji="⚠️")
+    async def btn_warn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Открываем модальное окно для выдачи варна
+        await interaction.response.send_modal(WarnModal(target_member=self.user))
+
+    @discord.ui.button(label="❌ Закрыть", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def btn_close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="🔒 Профиль закрыт",
+            description="Используй `/профиль` чтобы открыть снова.",
+            color=0x808080
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        await asyncio.sleep(5)
+        try:
+            await interaction.message.delete()
+        except:
+            pass
+
+@bot.tree.command(name="профиль", description="Показывает профиль пользователя")
+@app_commands.describe(пользователь="Пользователь, чей профиль нужно показать")
+async def profile(interaction: discord.Interaction, пользователь: discord.Member = None):
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Эта команда работает только на сервере!", ephemeral=True)
+        return
+
+    if пользователь is None:
+        пользователь = interaction.user
+
+    if пользователь not in interaction.guild.members:
+        await interaction.response.send_message("❌ Этот пользователь не найден на сервере!", ephemeral=True)
+        return
+
+    # Проверяем, админ ли тот, кто вызвал команду
+    is_admin = interaction.user.guild_permissions.administrator
+    
+    view = ProfileView(пользователь, interaction.guild, interaction.user.id, is_admin=is_admin)
+    embed = view.get_embed()
+    
+    await interaction.response.send_message(embed=embed, view=view)
+    view.message = await interaction.original_response()
+
+# ====================================================
+# ОСТАЛЬНЫЕ КОМАНДЫ (ВАЙПЫ, АВТОРОЛИ)
 # ====================================================
 
 class VipeSetModal(discord.ui.Modal, title='⚙️ НАСТРОЙКА ВАЙПА'):
@@ -376,10 +529,6 @@ class ServerDeleteModal(discord.ui.Modal, title='🗑️ УДАЛЕНИЕ СЕР
         else:
             await interaction.followup.send(f"❌ Сервер **{name}** не найден!\nСписок пуст.", ephemeral=True)
 
-# ====================================================
-# МЕНЮ УПРАВЛЕНИЯ СЕРВЕРАМИ
-# ====================================================
-
 class ServersManageView(discord.ui.View):
     def __init__(self, author_id):
         super().__init__(timeout=300)
@@ -407,15 +556,10 @@ class ServersManageView(discord.ui.View):
             pass
         await interaction.response.send_message("✅ Закрыто", ephemeral=True)
 
-# ====================================================
-# КОМАНДЫ
-# ====================================================
-
 @bot.tree.command(name="vipeset", description="Настройка основного вайпа")
 @app_commands.default_permissions(administrator=True)
 async def vipeset(interaction: discord.Interaction):
     await interaction.response.send_modal(VipeSetModal())
-
 
 @bot.tree.command(name="vipeset_servers", description="Управление списком серверов")
 @app_commands.default_permissions(administrator=True)
@@ -424,7 +568,6 @@ async def vipeset_servers(interaction: discord.Interaction):
     view = ServersManageView(author_id=interaction.user.id)
     embed = discord.Embed(title="⚙️ УПРАВЛЕНИЕ СЕРВЕРАМИ", description="➕ **Добавить сервер**\n🗑️ **Удалить сервер**", color=0x00ff00, timestamp=datetime.now())
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-
 
 @bot.tree.command(name="vipelist", description="Показывает список всех серверов с вайпами")
 async def vipelist(interaction: discord.Interaction):
@@ -451,6 +594,41 @@ async def vipelist(interaction: discord.Interaction):
         embed.add_field(name=f"🎮 {server['name']}", value=f"📅 **{server.get('wipe_day')}**\n🕐 **{server.get('wipe_time')}**\n⏳ {status}", inline=False)
     
     await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="вайп", description="Показывает расписание основного вайпа")
+async def raid_slash(interaction: discord.Interaction):
+    await interaction.response.defer()
+    
+    embed = discord.Embed(title="⚔️ РАСПИСАНИЕ ВАЙПА ⚔️", color=0xff5500, timestamp=datetime.now())
+    embed.add_field(name="🕐 Время", value=f"**{raid_data['time']}**", inline=True)
+    embed.add_field(name="📅 День", value=f"**{raid_data['weekday']}**", inline=True)
+    embed.add_field(name="🎮 Сервер", value=f"**{raid_data['server']}**", inline=True)
+    embed.add_field(name="📢 Канал", value=f"<#{raid_data['channel_id']}>" if raid_data.get('channel_id') else "❌ Не установлен", inline=True)
+    embed.add_field(name="⏰ Напоминание", value=f"За **{raid_data['reminder_hours']}** час(а)", inline=True)
+    
+    await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="arole", description="Включить или выключить систему авторолей")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(status="Выберите действие")
+@app_commands.choices(status=[
+    app_commands.Choice(name="Включить", value="on"),
+    app_commands.Choice(name="Выключить", value="off")
+])
+async def arole(interaction: discord.Interaction, status: app_commands.Choice[str]):
+    await interaction.response.defer(ephemeral=True)
+    
+    if status.value == "on":
+        bot_settings["autoroles_enabled"] = True
+        save_settings()
+        embed = discord.Embed(title="✅ АВТОРОЛИ ВКЛЮЧЕНЫ", color=0x00ff00, timestamp=datetime.now())
+    else:
+        bot_settings["autoroles_enabled"] = False
+        save_settings()
+        embed = discord.Embed(title="🛑 АВТОРОЛИ ВЫКЛЮЧЕНЫ", color=0xff0000, timestamp=datetime.now())
+    
+    embed.set_footer(text=f"Текущий статус: {status.name}")
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 # ====================================================
 # ЗАПУСК

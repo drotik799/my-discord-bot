@@ -341,7 +341,6 @@ class ProfileView(discord.ui.View):
 
     @discord.ui.button(label="⚠️ Выдать варн", style=discord.ButtonStyle.danger, emoji="⚠️")
     async def btn_warn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Проверка прав на всякий случай
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ У вас нет прав для выдачи варна!", ephemeral=True)
             return
@@ -376,7 +375,6 @@ async def profile(interaction: discord.Interaction, пользователь: di
         await interaction.response.send_message("❌ Этот пользователь не найден на сервере!", ephemeral=True)
         return
 
-    # Проверяем, админ ли тот, кто вызвал команду
     is_admin = interaction.user.guild_permissions.administrator
     
     view = ProfileView(пользователь, interaction.guild, interaction.user.id, is_admin=is_admin)
@@ -636,6 +634,30 @@ async def arole(interaction: discord.Interaction, status: app_commands.Choice[st
     
     embed.set_footer(text=f"Текущий статус: {status.name}")
     await interaction.followup.send(embed=embed, ephemeral=True)
+
+# ----------------------------------------------------
+# ПРИНУДИТЕЛЬНАЯ СИНХРОНИЗАЦИЯ
+# ----------------------------------------------------
+
+@bot.tree.command(name="sync", description="Принудительно обновить список команд в Discord")
+async def sync_cmd(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        # Синхронизируем именно для этого сервера (работает быстрее)
+        await bot.tree.sync(guild=interaction.guild)
+        
+        # Получаем список команд, которые видит Discord
+        commands = await bot.tree.fetch_commands(guild=interaction.guild)
+        names = ", ".join([f"/{c.name}" for c in commands])
+        
+        await interaction.followup.send(
+            f"✅ Синхронизация завершена!\n"
+            f"📋 Зарегистрировано команд: **{len(commands)}**\n"
+            f"Список: {names}", 
+            ephemeral=True
+        )
+    except Exception as e:
+        await interaction.followup.send(f"❌ Ошибка синхронизации: {e}", ephemeral=True)
 
 # ====================================================
 # ЗАПУСК

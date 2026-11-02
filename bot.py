@@ -25,7 +25,7 @@ SERVERS_FILE = "rust_servers.json"
 SETTINGS_FILE = "bot_settings.json"
 WARNS_FILE = "warns_data.json"
 
-# Данные о вайпе (основной)
+# Данные о вайпе
 raid_data = {
     "time": "20:00",
     "weekday": "Суббота",
@@ -104,7 +104,6 @@ def save_warns():
     try:
         with open(WARNS_FILE, 'w', encoding='utf-8') as f:
             json.dump(warns_data, f, ensure_ascii=False, indent=4)
-        print("✅ Варны сохранены")
     except Exception as e:
         print(f"❌ Ошибка сохранения варнов: {e}")
 
@@ -236,7 +235,7 @@ class WarnModal(discord.ui.Modal, title='⚠️ ВЫДАЧА ВАРНА'):
             dm_embed.add_field(name="⚠️ Всего варнов", value=f"**{len(warns_data[user_id])}**", inline=True)
             await self.target_member.send(embed=dm_embed)
         except:
-            pass  # Если у пользователя закрыты ЛС
+            pass
         
         await interaction.followup.send(
             f"✅ Варн выдан игроку {self.target_member.mention}!\n"
@@ -257,9 +256,13 @@ class ProfileView(discord.ui.View):
         self.author_id = author_id
         self.message = None
         
-        # Если пользователь не админ — удаляем кнопку "Выдать варн"
+        # Безопасно скрываем кнопку варна для не-админов
         if not is_admin:
-            self.remove_item(self.btn_warn)
+            for item in self.children:
+                if isinstance(item, discord.ui.Button) and item.label == "⚠️ Выдать варн":
+                    item.disabled = True
+                    item.style = discord.ButtonStyle.secondary
+                    break
     
     async def interaction_check(self, interaction: discord.Interaction):
         if interaction.user.id != self.author_id:
@@ -274,9 +277,9 @@ class ProfileView(discord.ui.View):
         if self.message:
             for item in self.children:
                 item.disabled = True
-            await self.message.edit(view=self)
-            await asyncio.sleep(5)
             try:
+                await self.message.edit(view=self)
+                await asyncio.sleep(5)
                 await self.message.delete()
             except:
                 pass
@@ -338,7 +341,11 @@ class ProfileView(discord.ui.View):
 
     @discord.ui.button(label="⚠️ Выдать варн", style=discord.ButtonStyle.danger, emoji="⚠️")
     async def btn_warn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Открываем модальное окно для выдачи варна
+        # Проверка прав на всякий случай
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ У вас нет прав для выдачи варна!", ephemeral=True)
+            return
+            
         await interaction.response.send_modal(WarnModal(target_member=self.user))
 
     @discord.ui.button(label="❌ Закрыть", style=discord.ButtonStyle.secondary, emoji="❌")
